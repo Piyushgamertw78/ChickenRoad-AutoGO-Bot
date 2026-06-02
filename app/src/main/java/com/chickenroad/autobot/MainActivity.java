@@ -6,21 +6,21 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.media.projection.MediaProjectionManager;
 import android.os.Bundle;
+import android.os.CountDownTimer;
+import android.os.Handler;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
+import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.WindowManager;
-import android.widget.Button;
-import android.widget.FrameLayout;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.SeekBar;
-import android.widget.TextView;
-import android.widget.Toast;
+import android.view.ViewGroup;
+import android.widget.*;
 
 public class MainActivity extends Activity {
 
@@ -32,29 +32,30 @@ public class MainActivity extends Activity {
     private SeekBar sensitivityBar;
     private TextView sensitivityValue;
     private ScrollView logScroll;
+    private FrameLayout rootFrame;
+
+    // Overlay views for setting
+    private View dimOverlay;
+    private ZoneDrawView zoneDrawView;
+    private TextView overlayInstruction;
+    private Button overlayCancelBtn;
 
     private boolean settingGO = false;
     private boolean settingZone = false;
     private float zoneStartX, zoneStartY;
-    private boolean zonePhase1 = true; // true = first corner, false = second corner
-
+    private boolean zonePhase1 = true;
     private int screenW, screenH;
-
-    // Overlay for zone/point selection
-    private android.view.WindowManager.LayoutParams overlayParams;
-    private View overlayView;
 
     private BroadcastReceiver triggeredReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             runOnUiThread(() -> {
-                statusText.setText("✅ GO CLICKED! Bot ne kaam kar diya!");
-                statusText.setTextColor(Color.parseColor("#00ff88"));
+                setStatus("✅ GO CLICKED! Done.", "#00ff88");
                 armBtn.setEnabled(true);
                 armBtn.setBackgroundColor(Color.parseColor("#00aa44"));
                 stopBtn.setEnabled(false);
                 addLog("⚡ GO button clicked! Bot band hua.");
-                addLog("🔄 Dobara khelne ke liye STOP/RESET phir ARM dabao.");
+                addLog("🔄 Dobara khelne ke liye phir ARM dabao.");
             });
         }
     };
@@ -74,77 +75,93 @@ public class MainActivity extends Activity {
         IntentFilter filter = new IntentFilter("com.chickenroad.autobot.TRIGGERED");
         registerReceiver(triggeredReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
 
-        addLog("🐔 Chicken Road Auto-GO Bot Ready!");
-        addLog("📋 Steps: 1) Zone set karo 2) GO button set karo 3) ARM karo");
+        addLog("🐔 Bot ready! Steps follow karo.");
         checkAccessibilityService();
+        refreshCoordDisplays();
     }
 
     private void buildUI() {
-        // Main scroll layout
-        ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(Color.parseColor("#0d1117"));
+        // Root FrameLayout — so we can overlay things on top
+        rootFrame = new FrameLayout(this);
+        rootFrame.setBackgroundColor(Color.parseColor("#0d1117"));
 
+        // Scrollable main content
+        ScrollView sv = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(24, 48, 24, 24);
+        root.setPadding(28, 56, 28, 28);
         sv.addView(root);
+        rootFrame.addView(sv, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
-        // Title
+        // ── Title ──
         TextView title = new TextView(this);
         title.setText("🐔 Chicken Road\nAuto-GO Bot");
         title.setTextColor(Color.parseColor("#00ff88"));
         title.setTextSize(22);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
-        title.setGravity(android.view.Gravity.CENTER);
-        title.setPadding(0, 0, 0, 16);
+        title.setGravity(Gravity.CENTER);
+        title.setPadding(0, 0, 0, 20);
         root.addView(title);
 
-        // Status
+        // ── Status ──
         statusText = new TextView(this);
-        statusText.setText("⏸ Setup karo pehle...");
+        statusText.setText("⏸ Pehle setup karo...");
         statusText.setTextColor(Color.parseColor("#ffcc00"));
-        statusText.setTextSize(14);
-        statusText.setGravity(android.view.Gravity.CENTER);
+        statusText.setTextSize(13);
+        statusText.setGravity(Gravity.CENTER);
         statusText.setBackgroundColor(Color.parseColor("#161b22"));
-        statusText.setPadding(16, 12, 16, 12);
+        statusText.setPadding(16, 14, 16, 14);
         root.addView(statusText);
-        addMargin(root, 16);
+        gap(root, 20);
 
-        // STEP 1 - Zone
-        TextView step1Title = makeLabel(root, "📍 STEP 1: Detection Zone");
+        // ── STEP 1: Zone ──
+        sectionLabel(root, "📍 STEP 1: Detection Zone (Car wali Lane)");
+
         zoneCoordText = new TextView(this);
-        zoneCoordText.setText("❌ Zone not set");
         zoneCoordText.setTextColor(Color.parseColor("#ff6666"));
         zoneCoordText.setTextSize(12);
         root.addView(zoneCoordText);
+        gap(root, 6);
 
-        setZoneBtn = makeButton(root, "📍 Detection Zone Set Karo", "#0f3460");
-        setZoneBtn.setOnClickListener(v -> startZoneSetting());
-        addMargin(root, 16);
+        setZoneBtn = btn(root, "📍 Lane Area Draw Karo (App ke andar)", "#1a4a7a");
+        setZoneBtn.setOnClickListener(v -> startZoneDrawing());
+        gap(root, 20);
 
-        // STEP 2 - GO Button
-        TextView step2Title = makeLabel(root, "🎯 STEP 2: GO Button Location");
+        // ── STEP 2: GO Button ──
+        sectionLabel(root, "🎯 STEP 2: GO Button Position");
+
         goCoordText = new TextView(this);
-        goCoordText.setText("❌ GO Button not set");
         goCoordText.setTextColor(Color.parseColor("#ff6666"));
         goCoordText.setTextSize(12);
         root.addView(goCoordText);
+        gap(root, 6);
 
-        setGoBtn = makeButton(root, "🎯 GO Button Set Karo (3 sec)", "#0f3460");
-        setGoBtn.setOnClickListener(v -> startGOSetting());
-        addMargin(root, 16);
+        setGoBtn = btn(root, "🎯 GO Button Pe Tap Karo (App ke andar)", "#1a4a7a");
+        setGoBtn.setOnClickListener(v -> startGOTap());
+        gap(root, 20);
 
-        // Sensitivity
-        makeLabel(root, "⚙️ Detection Sensitivity:");
+        // ── Sensitivity ──
+        sectionLabel(root, "⚙️ Sensitivity (Kitna change ho to trigger ho):");
+
+        TextView sensHint = new TextView(this);
+        sensHint.setText("  कम = ज्यादा sensitive | ज्यादा = कम sensitive (Default: 30)");
+        sensHint.setTextColor(Color.parseColor("#888888"));
+        sensHint.setTextSize(11);
+        root.addView(sensHint);
+
         LinearLayout sensRow = new LinearLayout(this);
         sensitivityBar = new SeekBar(this);
         sensitivityBar.setMax(95);
-        sensitivityBar.setProgress(prefs.getInt("sensitivity", 30) - 5);
+        int savedSens = prefs.getInt("sensitivity", 30);
+        sensitivityBar.setProgress(savedSens - 5);
         sensitivityValue = new TextView(this);
-        sensitivityValue.setText(String.valueOf(prefs.getInt("sensitivity", 30)));
-        sensitivityValue.setTextColor(Color.WHITE);
-        sensitivityValue.setTextSize(14);
+        sensitivityValue.setText(String.valueOf(savedSens));
+        sensitivityValue.setTextColor(Color.parseColor("#00ff88"));
+        sensitivityValue.setTextSize(15);
+        sensitivityValue.setTypeface(null, android.graphics.Typeface.BOLD);
         sensitivityValue.setPadding(16, 0, 0, 0);
+        sensitivityValue.setMinWidth(80);
         sensitivityBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onProgressChanged(SeekBar s, int p, boolean f) {
                 int val = p + 5;
@@ -154,197 +171,242 @@ public class MainActivity extends Activity {
             public void onStartTrackingTouch(SeekBar s) {}
             public void onStopTrackingTouch(SeekBar s) {}
         });
-        sensRow.addView(sensitivityBar, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        sensRow.addView(sensitivityBar, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         sensRow.addView(sensitivityValue);
         root.addView(sensRow);
-        addMargin(root, 24);
+        gap(root, 28);
 
-        // ARM / STOP buttons
-        armBtn = makeButton(root, "🟢 ARM / START", "#00aa44");
+        // ── ARM / STOP ──
+        armBtn = btn(root, "🟢  ARM / START", "#00aa44");
         armBtn.setEnabled(false);
-        armBtn.setOnClickListener(v -> requestMediaProjectionAndArm());
-        addMargin(root, 8);
+        armBtn.setTextSize(17);
+        armBtn.setOnClickListener(v -> requestProjectionAndArm());
+        gap(root, 10);
 
-        stopBtn = makeButton(root, "🔴 STOP / RESET", "#aa0000");
+        stopBtn = btn(root, "🔴  STOP / RESET", "#aa0000");
         stopBtn.setEnabled(false);
+        stopBtn.setTextSize(17);
         stopBtn.setOnClickListener(v -> stopBot());
-        addMargin(root, 16);
+        gap(root, 20);
 
-        // Accessibility check button
-        Button accessBtn = makeButton(root, "⚙️ Accessibility Service Enable Karo", "#333355");
-        accessBtn.setOnClickListener(v -> {
-            Intent i = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-            startActivity(i);
-        });
-        addMargin(root, 16);
+        // ── Accessibility ──
+        Button accBtn = btn(root, "⚙️ Accessibility Service ON Karo", "#2a2a55");
+        accBtn.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        gap(root, 20);
 
-        // Log area
-        makeLabel(root, "📋 Log:");
+        // ── Log ──
+        sectionLabel(root, "📋 Log:");
         logScroll = new ScrollView(this);
         logText = new TextView(this);
         logText.setTextColor(Color.parseColor("#00ff88"));
         logText.setTextSize(11);
         logText.setTypeface(android.graphics.Typeface.MONOSPACE);
-        logText.setPadding(8, 8, 8, 8);
+        logText.setPadding(10, 8, 10, 8);
         logScroll.addView(logText);
         logScroll.setBackgroundColor(Color.parseColor("#0a0a1a"));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 400);
-        root.addView(logScroll, lp);
+        root.addView(logScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 350));
 
-        // Footer
+        gap(root, 10);
         TextView footer = new TextView(this);
-        footer.setText("⚡ ~50-100ms trigger speed | Sirf 1 baar kaam karta hai");
+        footer.setText("⚡ ~50ms trigger speed | 1 baar click → auto stop");
         footer.setTextColor(Color.parseColor("#444466"));
         footer.setTextSize(10);
-        footer.setGravity(android.view.Gravity.CENTER);
-        footer.setPadding(0, 16, 0, 0);
+        footer.setGravity(Gravity.CENTER);
         root.addView(footer);
 
-        setContentView(sv);
+        setContentView(rootFrame);
     }
 
-    private void startZoneSetting() {
-        addLog("📍 Zone set mode: Screen pe us LANE area ko tap karo jahan se CAR aati hai");
-        addLog("   Pehle tap = Zone ka upar-baya corner");
-        addLog("   Doosra tap = Zone ka neeche-daaya corner");
-
-        zonePhase1 = true;
+    // ════════════════════════════════════════════════
+    // ZONE DRAWING — App ke andar overlay draw karo
+    // ════════════════════════════════════════════════
+    private void startZoneDrawing() {
         settingZone = true;
         settingGO = false;
-        statusText.setText("📍 STEP 1: Pehle lane ke UPAR-BAYE corner pe tap karo");
-        statusText.setTextColor(Color.parseColor("#00ccff"));
+        zonePhase1 = true;
 
-        showOverlay("📍 Lane ke UPAR-BAYE corner pe tap karo\n(Jahan se car aati hai us lane ke start pe)");
+        // Dim overlay
+        dimOverlay = new View(this);
+        dimOverlay.setBackgroundColor(Color.parseColor("#CC000000"));
+        rootFrame.addView(dimOverlay, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        // Drawing canvas
+        zoneDrawView = new ZoneDrawView(this);
+        rootFrame.addView(zoneDrawView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        // Instruction text
+        overlayInstruction = new TextView(this);
+        overlayInstruction.setText("📍 Jis LANE se car aati hai\nus area pe DRAG karo (finger slide)");
+        overlayInstruction.setTextColor(Color.WHITE);
+        overlayInstruction.setTextSize(17);
+        overlayInstruction.setTypeface(null, android.graphics.Typeface.BOLD);
+        overlayInstruction.setGravity(Gravity.CENTER);
+        overlayInstruction.setBackgroundColor(Color.parseColor("#CC1a4a7a"));
+        overlayInstruction.setPadding(20, 16, 20, 16);
+        FrameLayout.LayoutParams instrParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT);
+        instrParams.gravity = Gravity.TOP;
+        instrParams.topMargin = 60;
+        rootFrame.addView(overlayInstruction, instrParams);
+
+        // Cancel button
+        overlayCancelBtn = new Button(this);
+        overlayCancelBtn.setText("✖ Cancel");
+        overlayCancelBtn.setBackgroundColor(Color.parseColor("#aa0000"));
+        overlayCancelBtn.setTextColor(Color.WHITE);
+        overlayCancelBtn.setOnClickListener(v -> cancelOverlay());
+        FrameLayout.LayoutParams cancelParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cancelParams.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        cancelParams.bottomMargin = 120;
+        rootFrame.addView(overlayCancelBtn, cancelParams);
+
+        addLog("📍 Zone draw mode: Drag karo jahan se car aati hai");
     }
 
-    private void startGOSetting() {
-        addLog("🎯 GO button set: 3 second baad position capture hogi...");
-        addLog("   Abhi GO button pe APNI UNGLI RAKHKE HOLD karo!");
-
+    // ════════════════════════════════════════════════
+    // GO BUTTON TAP — App ke andar hi tap karo
+    // ════════════════════════════════════════════════
+    private void startGOTap() {
         settingGO = true;
         settingZone = false;
-        statusText.setText("🎯 GO button pe finger rakhkar 3 sec hold karo!");
-        statusText.setTextColor(Color.parseColor("#ffaa00"));
 
-        showOverlay("🎯 GO button pe FINGER RAKHKE 3 SECOND HOLD karo!\n(Screen pe neeche green GO button pe)");
+        // Dim overlay
+        dimOverlay = new View(this);
+        dimOverlay.setBackgroundColor(Color.parseColor("#CC000000"));
+        rootFrame.addView(dimOverlay, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
-        // Countdown
-        android.os.Handler h = new android.os.Handler(getMainLooper());
-        for (int i = 3; i >= 1; i--) {
-            final int sec = i;
-            h.postDelayed(() -> {
-                statusText.setText("🎯 GO button hold karo... " + sec + "s");
-            }, (3 - i) * 1000L);
-        }
+        // Instruction
+        overlayInstruction = new TextView(this);
+        overlayInstruction.setText("🎯 Abhi apne phone screen pe\nChicken Road ka GO button\nJIS JAGAH pe hai — WAHAN TAP KARO\n\n(Neeche ka green GO button ka position)");
+        overlayInstruction.setTextColor(Color.WHITE);
+        overlayInstruction.setTextSize(18);
+        overlayInstruction.setTypeface(null, android.graphics.Typeface.BOLD);
+        overlayInstruction.setGravity(Gravity.CENTER);
+        overlayInstruction.setBackgroundColor(Color.parseColor("#CC1a5a1a"));
+        overlayInstruction.setPadding(24, 20, 24, 20);
+        FrameLayout.LayoutParams instrParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT);
+        instrParams.gravity = Gravity.CENTER_VERTICAL;
+        rootFrame.addView(overlayInstruction, instrParams);
 
-        h.postDelayed(() -> {
-            settingGO = false;
-            hideOverlay();
-            statusText.setText("✅ Tap the GO button NOW on your game!");
-            showOverlay("⬇️ AB GO BUTTON PE TAP KARO! ⬇️\n(Neeche game ka green GO button)");
+        // Target crosshair view
+        View crosshair = new View(this) {
+            @Override
+            protected void onDraw(Canvas c) {
+                Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                p.setColor(Color.parseColor("#00ff88"));
+                p.setStrokeWidth(4);
+                int cx = getWidth() / 2, cy = getHeight() / 2;
+                // Circle
+                p.setStyle(Paint.Style.STROKE);
+                c.drawCircle(cx, cy, 60, p);
+                // Cross lines
+                c.drawLine(cx - 90, cy, cx - 20, cy, p);
+                c.drawLine(cx + 20, cy, cx + 90, cy, p);
+                c.drawLine(cx, cy - 90, cx, cy - 20, p);
+                c.drawLine(cx, cy + 20, cx, cy + 90, p);
+            }
+        };
+        FrameLayout.LayoutParams chParams = new FrameLayout.LayoutParams(200, 200);
+        chParams.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        chParams.bottomMargin = 250;
+        rootFrame.addView(crosshair, chParams);
 
-            // After 4 seconds, cancel if not set
-            h.postDelayed(() -> {
-                if (settingGO || !prefs.contains("go_x")) {
-                    hideOverlay();
-                    statusText.setText("❌ GO not set. Try again.");
-                }
-            }, 4000);
-        }, 3000);
-    }
+        // Cancel button
+        overlayCancelBtn = new Button(this);
+        overlayCancelBtn.setText("✖ Cancel");
+        overlayCancelBtn.setBackgroundColor(Color.parseColor("#aa0000"));
+        overlayCancelBtn.setTextColor(Color.WHITE);
+        overlayCancelBtn.setOnClickListener(v -> cancelOverlay());
+        FrameLayout.LayoutParams cancelParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cancelParams.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        cancelParams.bottomMargin = 120;
+        rootFrame.addView(overlayCancelBtn, cancelParams);
 
-    @Override
-    public boolean onTouchEvent(MotionEvent event) {
-        if (event.getAction() == MotionEvent.ACTION_DOWN) {
-            float x = event.getRawX();
-            float y = event.getRawY();
-
-            if (settingGO) {
-                prefs.edit().putInt("go_x", (int) x).putInt("go_y", (int) y).apply();
+        // Touch listener on dimOverlay to capture tap
+        dimOverlay.setOnTouchListener((v2, event) -> {
+            if (!settingGO) return false;
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                int gx = (int) event.getRawX();
+                int gy = (int) event.getRawY();
+                prefs.edit().putInt("go_x", gx).putInt("go_y", gy).apply();
                 settingGO = false;
-                hideOverlay();
-                goCoordText.setText("✅ GO Button: (" + (int)x + ", " + (int)y + ")");
-                goCoordText.setTextColor(Color.parseColor("#00ff88"));
-                addLog("✅ GO Button set: (" + (int)x + ", " + (int)y + ")");
-                statusText.setText("✅ GO Button set! Ab ARM karo.");
-                statusText.setTextColor(Color.parseColor("#00ff88"));
-                checkArmReady();
-                return true;
-            }
-
-            if (settingZone) {
-                if (zonePhase1) {
-                    zoneStartX = x;
-                    zoneStartY = y;
-                    zonePhase1 = false;
-                    addLog("📍 Zone corner 1: (" + (int)x + ", " + (int)y + ")");
-                    statusText.setText("📍 STEP 2: Ab NEECHE-DAAYE corner pe tap karo");
-                    hideOverlay();
-                    showOverlay("📍 Ab zone ke NEECHE-DAAYE corner pe tap karo");
-                } else {
-                    float endX = x;
-                    float endY = y;
-                    int x1 = (int) Math.min(zoneStartX, endX);
-                    int y1 = (int) Math.min(zoneStartY, endY);
-                    int x2 = (int) Math.max(zoneStartX, endX);
-                    int y2 = (int) Math.max(zoneStartY, endY);
-
-                    prefs.edit()
-                        .putInt("zone_x1", x1).putInt("zone_y1", y1)
-                        .putInt("zone_x2", x2).putInt("zone_y2", y2)
-                        .apply();
-
-                    settingZone = false;
-                    zonePhase1 = true;
-                    hideOverlay();
-
-                    zoneCoordText.setText("✅ Zone: (" + x1 + "," + y1 + ") → (" + x2 + "," + y2 + ")");
-                    zoneCoordText.setTextColor(Color.parseColor("#00ff88"));
-                    addLog("✅ Zone set: (" + x1 + "," + y1 + ") → (" + x2 + "," + y2 + ")");
-                    statusText.setText("✅ Zone set! Ab GO Button set karo.");
-                    statusText.setTextColor(Color.parseColor("#00ff88"));
+                cancelOverlay();
+                runOnUiThread(() -> {
+                    refreshCoordDisplays();
+                    addLog("✅ GO Button saved: (" + gx + ", " + gy + ")");
+                    setStatus("✅ GO set! Ab ARM karo.", "#00ff88");
                     checkArmReady();
-                    return true;
-                }
+                    // Show confirmation toast
+                    Toast.makeText(this, "✅ GO Position: " + gx + ", " + gy, Toast.LENGTH_SHORT).show();
+                });
                 return true;
             }
-        }
-        return super.onTouchEvent(event);
+            return false;
+        });
+
+        addLog("🎯 GO tap mode: Screen pe GO button ki jagah tap karo");
     }
 
-    private void showOverlay(String message) {
-        // Simple fullscreen instruction overlay
+    private void cancelOverlay() {
+        settingGO = false;
+        settingZone = false;
+        zonePhase1 = true;
+        // Remove all overlay views
         runOnUiThread(() -> {
-            statusText.setBackgroundColor(Color.parseColor("#CC000000"));
-            statusText.setText(message);
-            statusText.setTextColor(Color.parseColor("#00ff88"));
-            statusText.setTextSize(16);
+            if (dimOverlay != null && dimOverlay.getParent() != null)
+                rootFrame.removeView(dimOverlay);
+            if (zoneDrawView != null && zoneDrawView.getParent() != null)
+                rootFrame.removeView(zoneDrawView);
+            if (overlayInstruction != null && overlayInstruction.getParent() != null)
+                rootFrame.removeView(overlayInstruction);
+            if (overlayCancelBtn != null && overlayCancelBtn.getParent() != null)
+                rootFrame.removeView(overlayCancelBtn);
+            // Remove any extra child views added (crosshair etc)
+            // Keep only first 2 children (ScrollView + overlay base if any)
+            while (rootFrame.getChildCount() > 1) {
+                rootFrame.removeViewAt(1);
+            }
+            dimOverlay = null;
+            zoneDrawView = null;
+            overlayInstruction = null;
+            overlayCancelBtn = null;
         });
     }
 
-    private void hideOverlay() {
+    // Called from ZoneDrawView when user finishes drawing
+    void onZoneDrawn(int x1, int y1, int x2, int y2) {
+        prefs.edit()
+                .putInt("zone_x1", x1).putInt("zone_y1", y1)
+                .putInt("zone_x2", x2).putInt("zone_y2", y2)
+                .apply();
+        settingZone = false;
+        cancelOverlay();
         runOnUiThread(() -> {
-            statusText.setBackgroundColor(Color.parseColor("#161b22"));
-            statusText.setTextSize(14);
+            refreshCoordDisplays();
+            addLog("✅ Zone saved: (" + x1 + "," + y1 + ") → (" + x2 + "," + y2 + ")");
+            setStatus("✅ Zone set! Ab GO button set karo.", "#00ff88");
+            checkArmReady();
+            Toast.makeText(this, "✅ Zone set!", Toast.LENGTH_SHORT).show();
         });
     }
 
-    private void checkArmReady() {
-        if (prefs.contains("go_x") && prefs.contains("zone_x1")) {
-            armBtn.setEnabled(true);
-            armBtn.setBackgroundColor(Color.parseColor("#00aa44"));
-        }
-    }
-
-    private void requestMediaProjectionAndArm() {
+    // ════════════════════════════════════════════════
+    // ARM / STOP
+    // ════════════════════════════════════════════════
+    private void requestProjectionAndArm() {
         if (!AutoClickService.isRunning()) {
             Toast.makeText(this, "❌ Accessibility Service ON karo pehle!", Toast.LENGTH_LONG).show();
-            Intent i = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-            startActivity(i);
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
             return;
         }
-
         MediaProjectionManager mpm = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         startActivityForResult(mpm.createScreenCaptureIntent(), MEDIA_PROJECTION_REQUEST);
     }
@@ -352,98 +414,109 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == MEDIA_PROJECTION_REQUEST) {
-            if (resultCode == Activity.RESULT_OK && data != null) {
-                armBot(resultCode, data);
-            } else {
-                Toast.makeText(this, "Screen capture permission required!", Toast.LENGTH_LONG).show();
-            }
+        if (requestCode == MEDIA_PROJECTION_REQUEST && resultCode == Activity.RESULT_OK && data != null) {
+            Intent intent = new Intent(AutoClickService.ACTION_ARM);
+            intent.putExtra("resultCode", resultCode);
+            intent.putExtra("data", data);
+            sendBroadcast(intent);
+
+            setStatus("🟢 ARMED! Gaadi ka intezaar hai...", "#00ff88");
+            armBtn.setEnabled(false);
+            armBtn.setBackgroundColor(Color.parseColor("#005522"));
+            stopBtn.setEnabled(true);
+            addLog("🟢 Bot ARMED! GO: " + prefs.getInt("go_x",0) + "," + prefs.getInt("go_y",0));
+        } else {
+            Toast.makeText(this, "⚠️ Screen capture permission do!", Toast.LENGTH_LONG).show();
         }
-    }
-
-    private void armBot(int resultCode, Intent data) {
-        Intent intent = new Intent(AutoClickService.ACTION_ARM);
-        intent.putExtra("resultCode", resultCode);
-        intent.putExtra("data", data);
-        sendBroadcast(intent);
-
-        statusText.setText("🟢 ARMED! Gaadi ka intezaar hai...");
-        statusText.setTextColor(Color.parseColor("#00ff88"));
-        armBtn.setEnabled(false);
-        armBtn.setBackgroundColor(Color.parseColor("#005522"));
-        stopBtn.setEnabled(true);
-
-        addLog("🟢 Bot ARMED! Vehicle monitor ho raha hai...");
-        addLog("   GO at: " + prefs.getInt("go_x",0) + "," + prefs.getInt("go_y",0));
     }
 
     private void stopBot() {
         sendBroadcast(new Intent(AutoClickService.ACTION_STOP));
-        statusText.setText("⏹ STOPPED - Dobara ARM karo");
-        statusText.setTextColor(Color.parseColor("#ff6666"));
+        setStatus("⏹ Stopped. Dobara ARM karo.", "#ff6666");
         armBtn.setEnabled(prefs.contains("go_x") && prefs.contains("zone_x1"));
         armBtn.setBackgroundColor(Color.parseColor("#00aa44"));
         stopBtn.setEnabled(false);
         addLog("⏹ Bot STOPPED/RESET.");
     }
 
+    // ════════════════════════════════════════════════
+    // HELPERS
+    // ════════════════════════════════════════════════
+    private void checkArmReady() {
+        if (prefs.contains("go_x") && prefs.contains("zone_x1")) {
+            armBtn.setEnabled(true);
+            armBtn.setBackgroundColor(Color.parseColor("#00aa44"));
+            setStatus("✅ Ready! ARM dabao.", "#00ff88");
+        }
+    }
+
     private void checkAccessibilityService() {
         if (!AutoClickService.isRunning()) {
-            statusText.setText("⚠️ Pehle Accessibility Service ON karo!");
-            statusText.setTextColor(Color.parseColor("#ff6666"));
-            addLog("⚠️ Accessibility Service band hai!");
-            addLog("   'Accessibility Service Enable Karo' button dabao");
+            setStatus("⚠️ Pehle Accessibility Service ON karo!", "#ff4444");
+            addLog("⚠️ Accessibility Service band hai - button dabao enable karne ke liye");
         } else {
-            statusText.setText("✅ Service Active - Setup karo ab");
-            statusText.setTextColor(Color.parseColor("#00ff88"));
-            addLog("✅ Accessibility Service active hai!");
+            setStatus("✅ Service Active. Ab Zone aur GO set karo.", "#00ff88");
+            addLog("✅ Accessibility Service active!");
         }
+    }
+
+    private void refreshCoordDisplays() {
+        if (prefs.contains("go_x")) {
+            goCoordText.setText("✅ GO Button: (" + prefs.getInt("go_x",0) + ", " + prefs.getInt("go_y",0) + ")");
+            goCoordText.setTextColor(Color.parseColor("#00ff88"));
+        } else {
+            goCoordText.setText("❌ GO Button not set");
+            goCoordText.setTextColor(Color.parseColor("#ff6666"));
+        }
+        if (prefs.contains("zone_x1")) {
+            int x1=prefs.getInt("zone_x1",0), y1=prefs.getInt("zone_y1",0);
+            int x2=prefs.getInt("zone_x2",0), y2=prefs.getInt("zone_y2",0);
+            zoneCoordText.setText("✅ Zone: (" + x1 + "," + y1 + ") → (" + x2 + "," + y2 + ")");
+            zoneCoordText.setTextColor(Color.parseColor("#00ff88"));
+        } else {
+            zoneCoordText.setText("❌ Zone not set");
+            zoneCoordText.setTextColor(Color.parseColor("#ff6666"));
+        }
+    }
+
+    private void setStatus(String msg, String color) {
+        statusText.setText(msg);
+        statusText.setTextColor(Color.parseColor(color));
     }
 
     private void addLog(String msg) {
         String time = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-            .format(new java.util.Date());
-        String current = logText.getText().toString();
-        logText.setText(current + "\n[" + time + "] " + msg);
+                .format(new java.util.Date());
+        logText.setText(logText.getText() + "\n[" + time + "] " + msg);
         logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
     }
 
-    private Button makeButton(LinearLayout parent, String text, String color) {
-        Button btn = new Button(this);
-        btn.setText(text);
-        btn.setTextColor(Color.WHITE);
-        btn.setBackgroundColor(Color.parseColor(color));
-        btn.setTextSize(13);
-        btn.setAllCaps(false);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 
-            LinearLayout.LayoutParams.WRAP_CONTENT);
-        parent.addView(btn, lp);
-        return btn;
+    private Button btn(LinearLayout parent, String text, String color) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setTextColor(Color.WHITE);
+        b.setBackgroundColor(Color.parseColor(color));
+        b.setTextSize(14);
+        b.setAllCaps(false);
+        parent.addView(b, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        return b;
     }
 
-    private TextView makeLabel(LinearLayout parent, String text) {
+    private void sectionLabel(LinearLayout parent, String text) {
         TextView tv = new TextView(this);
         tv.setText(text);
         tv.setTextColor(Color.parseColor("#00ccff"));
         tv.setTextSize(13);
         tv.setTypeface(null, android.graphics.Typeface.BOLD);
-        tv.setPadding(0, 8, 0, 4);
+        tv.setPadding(0, 4, 0, 4);
         parent.addView(tv);
-        return tv;
     }
 
-    private void addMargin(LinearLayout parent, int dp) {
-        View spacer = new View(this);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, dp);
-        parent.addView(spacer, lp);
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        try { unregisterReceiver(triggeredReceiver); } catch (Exception ignored) {}
+    private void gap(LinearLayout parent, int dp) {
+        View v = new View(this);
+        parent.addView(v, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp));
     }
 
     @Override
@@ -451,16 +524,12 @@ public class MainActivity extends Activity {
         super.onResume();
         checkAccessibilityService();
         checkArmReady();
+        refreshCoordDisplays();
+    }
 
-        // Update saved coords display
-        if (prefs.contains("go_x")) {
-            goCoordText.setText("✅ GO Button: (" + prefs.getInt("go_x",0) + ", " + prefs.getInt("go_y",0) + ")");
-            goCoordText.setTextColor(Color.parseColor("#00ff88"));
-        }
-        if (prefs.contains("zone_x1")) {
-            zoneCoordText.setText("✅ Zone: (" + prefs.getInt("zone_x1",0) + "," + prefs.getInt("zone_y1",0) +
-                ") → (" + prefs.getInt("zone_x2",0) + "," + prefs.getInt("zone_y2",0) + ")");
-            zoneCoordText.setTextColor(Color.parseColor("#00ff88"));
-        }
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        try { unregisterReceiver(triggeredReceiver); } catch (Exception ignored) {}
     }
 }
